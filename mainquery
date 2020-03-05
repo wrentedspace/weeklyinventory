@@ -1,0 +1,72 @@
+DROP TEMPORARY TABLE IF EXISTS startinginventory;
+CREATE TEMPORARY TABLE startinginventory
+SELECT
+s.inventory_date,
+s.products_id,
+s.starting_ounces
+FROM starting_inventory AS s
+ORDER BY s.inventory_date, s.products_id;
+
+DROP TEMPORARY TABLE IF EXISTS harvestinventory;
+CREATE TEMPORARY TABLE harvestinventory
+SELECT
+h.hrv_date,
+h.products_id,
+ROUND(SUM(h.hrv_qty),2) AS hrv_sum
+FROM artemis_recently_harvested_crops as h
+WHERE hrv_date >= (CURRENT_DATE - INTERVAL 7 DAY) -- where harvest date is greater than or equal to current date minus 7 days (was harvested within the last week)
+GROUP BY h.hrv_date, h.products_id
+ORDER BY h.hrv_date, h.products_id;
+
+DROP TEMPORARY TABLE IF EXISTS ordersreq;
+CREATE TEMPORARY TABLE ordersreq
+SELECT
+	o.LastDeliveryDate,
+    o.ProdID,
+    SUM(o.OzRequired) AS OzReq
+FROM order_info as o
+WHERE o.ProdClass != 'V'
+	AND o.LastDeliveryDate >= (CURRENT_DATE - INTERVAL 7 DAY)
+GROUP BY o.LastDeliveryDate, o.ProdID;
+
+DROP TEMPORARY TABLE IF EXISTS summaryinventory;
+CREATE TEMPORARY TABLE summaryinventory
+SELECT 
+s.inventory_date,
+s.products_id,
+s.starting_ounces,
+h.hrv_sum,
+
+CASE
+	WHEN (s.starting_ounces + h.hrv_sum) IS NOT NULL THEN (s.starting_ounces + h.hrv_sum)
+    WHEN (s.starting_ounces + h.hrv_sum) IS NULL THEN 0
+END AS eod_ounces,
+
+o.OzReq AS ounces_req,
+
+CASE
+	WHEN (s.starting_ounces + h.hrv_sum) IS NOT NULL THEN (s.starting_ounces + h.hrv_sum - o.OzReq)
+    WHEN (s.starting_ounces + h.hrv_sum) IS NULL THEN (s.starting_ounces - o.OzReq)
+END AS proj_inv
+
+FROM
+startinginventory AS s
+LEFT OUTER JOIN harvestinventory AS h ON s.inventory_date = h.hrv_date
+	AND s.products_id = h.products_id
+LEFT OUTER JOIN ordersreq AS o ON s.inventory_date = o.LastDeliveryDate
+	AND s.products_id = o.ProdID
+ORDER BY s.inventory_date, s.products_id;
+
+SELECT
+inventory_date,
+products_id,
+starting_ounces,
+hrv_sum,
+eod_ounces,
+LAG (eod_ounces, 1, starting_ounces) OVER
+	(PARTITION BY products_id
+    ORDER BY inventory_date)
+    prev_day_inv,
+ounces_req,
+proj_inv
+FROM summaryinventory;
